@@ -26,6 +26,7 @@ type request[T any] struct {
 	body       []byte
 	result     T
 	isJson     bool
+	retBody    *bytes.Buffer
 	err        error
 }
 
@@ -111,11 +112,13 @@ func (r *request[T]) IsJson() *request[T] {
 	return r
 }
 
-func (r *request[T]) any(t any, b io.Reader) error {
-	dt, err := io.ReadAll(b)
-	if err != nil {
-		return err
-	}
+func (r *request[T]) ToBody(b *bytes.Buffer) *request[T] {
+	r.retBody = b
+	return r
+}
+
+func (r *request[T]) any(t any, dt []byte) error {
+	var err error
 	switch t.(type) {
 	case *[]byte:
 		*t.(*[]byte) = dt
@@ -199,8 +202,15 @@ func (r *request[T]) Fetch(ctx context.Context) (T, error) {
 		_ = Body.Close()
 	}(resp.Body)
 
+	var rdr io.Reader
+	if r.retBody != nil {
+		rdr = io.TeeReader(resp.Body, r.retBody)
+	} else {
+		rdr = resp.Body
+	}
+
 	if r.isJson {
-		dec := json.NewDecoder(resp.Body)
+		dec := json.NewDecoder(rdr)
 		r.err = dec.Decode(&t)
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			if r.err != nil {
@@ -210,7 +220,11 @@ func (r *request[T]) Fetch(ctx context.Context) (T, error) {
 		}
 		return t, r.err
 	}
-	r.err = r.any(&t, resp.Body)
+	dt, err := io.ReadAll(rdr)
+	if err != nil {
+		return t, err
+	}
+	r.err = r.any(&t, dt)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		if r.err != nil {
 			return t, errors.New(fmt.Sprintf("%s: status code incorrect, error decode body: %s\n", resp.Status, r.err.Error()))
