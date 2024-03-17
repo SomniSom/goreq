@@ -90,6 +90,7 @@ func (r *request[T]) Method(method string) *request[T] {
 // BodyJson set object on marshal to json
 func (r *request[T]) BodyJson(dt any) *request[T] {
 	r.body, r.err = json.Marshal(dt)
+	r.method = http.MethodPost
 	r.Headers("Content-Type", "application/json")
 	return r
 }
@@ -97,6 +98,7 @@ func (r *request[T]) BodyJson(dt any) *request[T] {
 // BodyRaw set body slice byte
 func (r *request[T]) BodyRaw(raw []byte) *request[T] {
 	r.body = raw
+	r.method = http.MethodPost
 	return r
 }
 
@@ -175,7 +177,10 @@ func (r *request[T]) Fetch(ctx context.Context) (T, error) {
 	}
 
 	req.WithContext(ctx)
-	req.Header = r.headers
+	//fix replace default headers
+	for k, v := range r.headers {
+		req.Header[k] = v
+	}
 	//endregion
 
 	//region client block
