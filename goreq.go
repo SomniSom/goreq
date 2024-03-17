@@ -46,9 +46,9 @@ func (r *request[T]) Params(attr ...string) *request[T] {
 	for len(attr) > 0 {
 		if len(attr) > 1 {
 			q.Add(attr[0], attr[1])
-			attr = attr[1:]
+			attr = attr[2:]
 		} else {
-			q.Add(attr[0], attr[1])
+			q.Add(attr[0], "")
 			attr = attr[0:]
 		}
 	}
