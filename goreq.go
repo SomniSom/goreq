@@ -89,6 +89,7 @@ func (r *request[T]) Method(method string) *request[T] {
 // BodyJson set object on marshal to json
 func (r *request[T]) BodyJson(dt any) *request[T] {
 	r.body, r.err = json.Marshal(dt)
+	r.Headers("Content-Type", "application/json")
 	return r
 }
 
