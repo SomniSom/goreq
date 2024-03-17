@@ -181,6 +181,7 @@ func (r *request[T]) Fetch(ctx context.Context) (T, error) {
 	proxyUrl, err := url.Parse(r.proxy)
 	if t, ok := r.client.Transport.(*http.Transport); ok {
 		t.Proxy = http.ProxyURL(proxyUrl)
+		r.client.Transport = t
 	}
 	//endregion
 
