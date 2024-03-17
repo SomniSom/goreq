@@ -7,9 +7,9 @@
 - Checks status codes by default
 - Supports context.Context
 - JSON serialization and deserialization helpers
-[//]: # (- Request recording and replaying for tests)
 - No third party dependencies
 
+[//]: # (- Request recording and replaying for tests)
 
 ## Examples
 ### Simple GET into a string
