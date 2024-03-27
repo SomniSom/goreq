@@ -12,22 +12,28 @@ import (
 	"net/url"
 	"slices"
 	"strconv"
+	"time"
 )
 
 type request[T any] struct {
-	u          *url.URL
-	link       string
-	method     string
-	headers    map[string][]string
-	data       []byte
-	dataReader *io.Reader
-	client     *http.Client
-	proxy      string
-	body       []byte
-	result     T
-	isJson     bool
-	retBody    *bytes.Buffer
-	err        error
+	u                 *url.URL
+	link              string
+	method            string
+	headers           map[string][]string
+	data              []byte
+	dataReader        *io.Reader
+	client            *http.Client
+	proxy             string
+	body              []byte
+	result            T
+	isJson            bool
+	retBody           *bytes.Buffer
+	finalReq          *http.Request
+	cntRepeat         uint
+	timeouts          []time.Duration
+	repeatStatusCodes []int
+	repeatHttpErrors  []error
+	err               error
 }
 
 // Client set http client
@@ -156,6 +162,51 @@ func (r *request[T]) Dump() ([]byte, error) {
 	return httputil.DumpRequest(req, true)
 }
 
+func (r *request[T]) request() (*http.Response, error) {
+	resp, err := r.client.Do(r.finalReq)
+	if err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+func (r *request[T]) inStatusCode(statusCode int) bool {
+	if len(r.repeatStatusCodes) == 0 {
+		return true
+	}
+	for _, code := range r.repeatStatusCodes {
+		if statusCode == code {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *request[T]) inHttpError(err error) bool {
+	if len(r.repeatHttpErrors) == 0 {
+		return true
+	}
+	for _, httpErr := range r.repeatHttpErrors {
+		if errors.Is(err, httpErr) {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *request[T]) RepeatParams(statusCode []int, httpError []error) *request[T] {
+	r.repeatStatusCodes = statusCode
+	r.repeatHttpErrors = httpError
+	return r
+}
+
+func (r *request[T]) Repeat(rp uint, timeouts ...time.Duration) *request[T] {
+	r.cntRepeat = rp
+	r.timeouts = timeouts
+	return r
+}
+
 // Fetch fetch request
 func (r *request[T]) Fetch(ctx context.Context) (T, error) {
 	var t T
@@ -164,22 +215,21 @@ func (r *request[T]) Fetch(ctx context.Context) (T, error) {
 	}
 	//region request block
 	var err error
-	var req *http.Request
 
 	if len(r.body) > 0 {
 		rdr := bytes.NewReader(r.body)
-		req, err = http.NewRequest(r.method, r.u.String(), rdr)
+		r.finalReq, err = http.NewRequest(r.method, r.u.String(), rdr)
 	} else {
-		req, err = http.NewRequest(r.method, r.u.String(), nil)
+		r.finalReq, err = http.NewRequest(r.method, r.u.String(), nil)
 	}
 	if err != nil {
 		return t, err
 	}
 
-	req.WithContext(ctx)
+	r.finalReq.WithContext(ctx)
 	//fix replace default headers
 	for k, v := range r.headers {
-		req.Header[k] = v
+		r.finalReq.Header[k] = v
 	}
 	//endregion
 
@@ -199,9 +249,31 @@ func (r *request[T]) Fetch(ctx context.Context) (T, error) {
 	}
 	//endregion
 
-	resp, err := r.client.Do(req)
-	if err != nil {
-		return t, err
+	var cnt uint
+
+	var resp *http.Response
+	for resp, err = r.request(); (err != nil || resp.StatusCode > 200) && cnt < r.cntRepeat; {
+		if cnt+1 >= r.cntRepeat {
+			break
+		}
+		if err != nil {
+			if !r.inHttpError(err) {
+				break
+			}
+		}
+		if resp != nil {
+			if !r.inStatusCode(resp.StatusCode) {
+				break
+			}
+		}
+		if len(r.timeouts) > 0 {
+			if len(r.timeouts) > int(cnt) {
+				time.Sleep(r.timeouts[cnt])
+			} else {
+				time.Sleep(r.timeouts[len(r.timeouts)-1])
+			}
+		}
+		cnt++
 	}
 	defer func(Body io.ReadCloser) {
 		_ = Body.Close()
@@ -251,3 +323,5 @@ func New[T any](link string) *request[T] {
 	}
 	return r
 }
+
+//todo repeat N with timeout, exponentional time.
