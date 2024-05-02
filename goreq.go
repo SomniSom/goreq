@@ -50,6 +50,10 @@ func (r *request[T]) Path(path string) *request[T] {
 
 func (r *request[T]) Params(attr ...string) *request[T] {
 	q := r.u.Query()
+	if len(attr)%2 != 0 {
+		r.err = errors.New("incompatible query parameter")
+		return r
+	}
 	for len(attr) > 0 {
 		if len(attr) > 1 {
 			q.Add(attr[0], attr[1])
