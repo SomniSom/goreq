@@ -135,12 +135,6 @@ func (r *request[T]) Proxy(proxy string) *request[T] {
 	return r
 }
 
-// IsJson if T is struct and response is application/json use this for set unmarshal
-func (r *request[T]) IsJson() *request[T] {
-	r.isJson = true
-	return r
-}
-
 func (r *request[T]) ToBody(b *bytes.Buffer) *request[T] {
 	r.retBody = b
 	return r
@@ -162,6 +156,24 @@ func (r *request[T]) any(t any, dt []byte) error {
 		t = dt
 	}
 	return nil
+}
+func (r *request[T]) checkType(t any) {
+	switch t.(type) {
+	case *[]byte:
+		r.isJson = false
+	case []byte:
+		r.isJson = false
+	case *string:
+		r.isJson = false
+	case string:
+		r.isJson = false
+	case int:
+		r.isJson = false
+	case *int:
+		r.isJson = false
+	default:
+		r.isJson = true
+	}
 }
 
 func (r *request[T]) Dump() ([]byte, error) {
@@ -326,6 +338,8 @@ func (r *request[T]) Fetch(ctx context.Context) (T, error) {
 // T any - string or byte or struct if IsJson
 func New[T any](link string) *request[T] {
 	r := new(request[T])
+	var t T
+	r.checkType(t)
 	r.method = http.MethodGet
 	r.headers = map[string][]string{}
 	r.client = http.DefaultClient
