@@ -115,6 +115,23 @@ func (r *request[T]) BodyRaw(raw []byte) *request[T] {
 // Proxy is not work
 func (r *request[T]) Proxy(proxy string) *request[T] {
 	r.proxy = proxy
+	if proxy != "" {
+		proxyUrl, err := url.Parse(r.proxy)
+		if err != nil {
+			r.err = err
+			return r
+		}
+		if r.client.Transport == nil {
+			r.client.Transport = &http.Transport{
+				Proxy: http.ProxyURL(proxyUrl),
+			}
+			return r
+		}
+		if t, ok := r.client.Transport.(*http.Transport); ok {
+			t.Proxy = http.ProxyURL(proxyUrl)
+			r.client.Transport = t
+		}
+	}
 	return r
 }
 
@@ -229,33 +246,18 @@ func (r *request[T]) Fetch(ctx context.Context) (T, error) {
 	if err != nil {
 		return t, err
 	}
+	//r.finalReq.WithContext(ctx)
 
-	r.finalReq.WithContext(ctx)
 	//fix replace default headers
 	for k, v := range r.headers {
 		r.finalReq.Header[k] = v
 	}
 	//endregion
 
-	//region client block
-	if r.client == nil {
-		r.client = http.DefaultClient
-	}
-	if r.proxy != "" {
-		proxyUrl, err := url.Parse(r.proxy)
-		if err != nil {
-			return t, err
-		}
-		if t, ok := r.client.Transport.(*http.Transport); ok {
-			t.Proxy = http.ProxyURL(proxyUrl)
-			r.client.Transport = t
-		}
-	}
-	//endregion
-
 	var cnt uint
-
+	//_ = cnt
 	var resp *http.Response
+	//resp, err = r.request()
 	for resp, err = r.request(); (err != nil || resp.StatusCode > 200) && cnt < r.cntRepeat; {
 		if cnt+1 >= r.cntRepeat {
 			break
@@ -326,6 +328,7 @@ func New[T any](link string) *request[T] {
 	r := new(request[T])
 	r.method = http.MethodGet
 	r.headers = map[string][]string{}
+	r.client = http.DefaultClient
 	r.u, r.err = url.Parse(link)
 	if r.err != nil {
 		r.u = new(url.URL)
