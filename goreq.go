@@ -283,7 +283,9 @@ func (r *request[T]) Fetch(ctx context.Context) (T, error) {
 		return t, err
 	}
 	defer func(Body io.ReadCloser) {
-		_ = Body.Close()
+		if Body != nil {
+			_ = Body.Close()
+		}
 	}(resp.Body)
 
 	var rdr io.Reader
