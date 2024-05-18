@@ -134,6 +134,9 @@ func (r *request[T]) Proxy(proxy string) *request[T] {
 }
 
 func (r *request[T]) ToBody(b *bytes.Buffer) *request[T] {
+	if b == nil {
+		return r
+	}
 	r.retBody = b
 	return r
 }
