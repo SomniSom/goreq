@@ -7,15 +7,164 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
+	"mime/multipart"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 )
 
-type request[T any] struct {
+//region Multipart
+
+type Multipart struct {
+	Ctx  context.Context
+	wr   *multipart.Writer
+	body *bytes.Buffer
+}
+
+func (m *Multipart) AddFile(fieldName string, filename string) *Multipart {
+	m.initBody()
+	dt, err := os.ReadFile(filename)
+	if err != nil {
+		m.contextErr(err)
+		return m
+	}
+	return m.AddFileData(fieldName, filename, dt)
+}
+
+func (m *Multipart) AddFileData(fieldName string, filename string, data []byte) *Multipart {
+	m.initBody()
+	wr, err := m.wr.CreateFormFile(fieldName, filename)
+	if err != nil {
+		m.contextErr(err)
+		return m
+	}
+	_, err = wr.Write(data)
+	if err != nil {
+		m.contextErr(err)
+		return m
+	}
+
+	return m
+}
+func (m *Multipart) Param(fieldName string, s string) *Multipart {
+	m.initBody()
+	return m.contextErr(m.wr.WriteField(fieldName, s))
+}
+
+func (m *Multipart) initBody() {
+	if m.body == nil && m.wr == nil {
+		m.body = new(bytes.Buffer)
+		m.wr = multipart.NewWriter(m.body)
+	}
+	if m.Ctx == nil {
+		m.Ctx = context.Background()
+	}
+}
+
+func (m *Multipart) contextErr(err error) *Multipart {
+	if err == nil {
+		return m
+	}
+	ctx, cancel := context.WithCancelCause(m.Ctx)
+	m.Ctx = ctx
+	cancel(err)
+	return m
+}
+
+func (m *Multipart) make() (string, []byte) {
+	defer func() {
+		m.body.Reset()
+	}()
+
+	err := m.wr.Close()
+	if err != nil {
+		m.contextErr(err)
+		return "", nil
+	}
+	return m.wr.FormDataContentType(), m.body.Bytes()
+}
+
+//endregion
+
+//region Retry
+
+// RetryOptions is params for retry Request
+type RetryOptions interface {
+	Repeat(response *http.Response, err error) bool
+	Sleep(counter int) bool
+}
+
+type DefaultRetryOptions struct {
+	Count           int
+	HttpErrors      []error
+	HttpStatusCodes []int
+}
+
+func (d DefaultRetryOptions) inStatusCode(statusCode int) bool {
+	if len(d.HttpStatusCodes) == 0 {
+		return true
+	}
+	for _, code := range d.HttpStatusCodes {
+		if statusCode == code {
+			return true
+		}
+	}
+	return false
+}
+
+func (d DefaultRetryOptions) inHttpError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if len(d.HttpErrors) == 0 {
+		return true
+	}
+	for _, httpErr := range d.HttpErrors {
+		if errors.Is(err, httpErr) {
+			return true
+		}
+	}
+	return false
+}
+
+func (d DefaultRetryOptions) Repeat(response *http.Response, err error) bool {
+	if response == nil {
+		return d.inHttpError(err)
+	}
+	slog.Debug("Retry", "response", response.StatusCode, "err", err)
+
+	return d.inHttpError(err) && d.inStatusCode(response.StatusCode)
+}
+
+func (d DefaultRetryOptions) Sleep(counter int) bool {
+	if counter > d.Count {
+		return false
+	}
+	slog.Debug("Sleep", "counter", counter)
+	time.Sleep(time.Duration(counter) * time.Second)
+	return true
+}
+
+type emptyOptions struct{}
+
+func (e emptyOptions) Repeat(_ *http.Response, _ error) bool {
+	return false
+}
+
+func (e emptyOptions) Sleep(_ int) bool {
+	panic("not implemented")
+}
+
+//endregion
+
+type Request[T any] struct {
+	ctx               context.Context
 	u                 *url.URL
 	link              string
 	method            string
@@ -25,33 +174,50 @@ type request[T any] struct {
 	client            *http.Client
 	proxy             string
 	body              []byte
+	multipart         *Multipart
 	result            T
 	isJson            bool
 	retBody           *bytes.Buffer
 	finalReq          *http.Request
-	cntRepeat         uint
+	retryOptions      RetryOptions
 	timeouts          []time.Duration
 	repeatStatusCodes []int
 	repeatHttpErrors  []error
 	err               error
+	cookie            []*http.Cookie
 }
 
 // Client set http client
-func (r *request[T]) Client(cl *http.Client) *request[T] {
+func (r *Request[T]) Client(cl *http.Client) *Request[T] {
+	if r.ctx.Err() != nil {
+		return r
+	}
 	r.client = cl
 	return r
 }
 
 // Path set path url
-func (r *request[T]) Path(path string) *request[T] {
+func (r *Request[T]) Path(path string) *Request[T] {
+	if r.ctx.Err() != nil {
+		return r
+	}
 	r.u.Path = path
 	return r
 }
 
-func (r *request[T]) Params(attr ...string) *request[T] {
+func (r *Request[T]) Cookie(c []*http.Cookie) *Request[T] {
+	r.cookie = c
+	return r
+}
+
+func (r *Request[T]) Params(attr ...string) *Request[T] {
+	if r.ctx.Err() != nil {
+		return r
+	}
 	q := r.u.Query()
 	if len(attr)%2 != 0 {
 		r.err = errors.New("incompatible query parameter")
+		r.contextErr(r.err)
 		return r
 	}
 	for len(attr) > 0 {
@@ -67,14 +233,11 @@ func (r *request[T]) Params(attr ...string) *request[T] {
 	return r
 }
 
-// Header add header Deprecated
-func (r *request[T]) Header(key, value string) *request[T] {
-	r.headers[key] = append(r.headers[key], value)
-	return r
-}
-
 // Headers add headers key/value
-func (r *request[T]) Headers(attr ...string) *request[T] {
+func (r *Request[T]) Headers(attr ...string) *Request[T] {
+	if r.ctx.Err() != nil {
+		return r
+	}
 	for len(attr) > 0 {
 		if len(attr) > 1 {
 			r.headers[attr[0]] = append(r.headers[attr[0]], attr[1])
@@ -88,34 +251,58 @@ func (r *request[T]) Headers(attr ...string) *request[T] {
 }
 
 // Method http method
-func (r *request[T]) Method(method string) *request[T] {
+func (r *Request[T]) Method(method string) *Request[T] {
+	if r.ctx.Err() != nil {
+		return r
+	}
 	if !slices.Contains([]string{http.MethodGet, http.MethodPost, http.MethodConnect, http.MethodDelete,
 		http.MethodOptions, http.MethodPatch, http.MethodTrace, http.MethodHead}, r.method) {
 		r.err = errors.New("method incorrect")
+		r.contextErr(r.err)
 	}
 	r.method = method
 	return r
 }
 
 // BodyJson set object on marshal to json
-func (r *request[T]) BodyJson(dt any) *request[T] {
+func (r *Request[T]) BodyJson(dt any) *Request[T] {
+	if r.ctx.Err() != nil {
+		return r
+	}
 	r.body, r.err = json.Marshal(dt)
+	r.contextErr(r.err)
 	r.Headers("Content-Type", "application/json")
 	return r
 }
 
+// BodyMultipart add multipart form data
+func (r *Request[T]) BodyMultipart(m *Multipart) *Request[T] {
+	if r.ctx.Err() != nil {
+		return r
+	}
+	r.multipart = m
+	return r
+}
+
 // BodyRaw set body slice byte
-func (r *request[T]) BodyRaw(raw []byte) *request[T] {
+func (r *Request[T]) BodyRaw(raw []byte) *Request[T] {
+	if r.ctx.Err() != nil {
+		return r
+	}
 	r.body = raw
 	return r
 }
 
 // Proxy is not work
-func (r *request[T]) Proxy(proxy string) *request[T] {
-	r.proxy = proxy
-	if proxy != "" {
+func (r *Request[T]) Proxy(proxy string) *Request[T] {
+	if r.ctx.Err() != nil {
+		return r
+	}
+	r.proxy = strings.TrimSpace(proxy)
+	if r.proxy != "" {
 		proxyUrl, err := url.Parse(r.proxy)
 		if err != nil {
+			r.contextErr(err)
 			r.err = err
 			return r
 		}
@@ -133,7 +320,10 @@ func (r *request[T]) Proxy(proxy string) *request[T] {
 	return r
 }
 
-func (r *request[T]) ToBody(b *bytes.Buffer) *request[T] {
+func (r *Request[T]) ToBody(b *bytes.Buffer) *Request[T] {
+	if r.ctx.Err() != nil {
+		return r
+	}
 	if b == nil {
 		return r
 	}
@@ -141,7 +331,7 @@ func (r *request[T]) ToBody(b *bytes.Buffer) *request[T] {
 	return r
 }
 
-func (r *request[T]) any(t any, dt []byte) error {
+func (r *Request[T]) any(t any, dt []byte) error {
 	var err error
 	switch t.(type) {
 	case *[]byte:
@@ -158,7 +348,7 @@ func (r *request[T]) any(t any, dt []byte) error {
 	}
 	return nil
 }
-func (r *request[T]) checkType(t any) {
+func (r *Request[T]) checkType(t any) {
 	switch t.(type) {
 	case *[]byte:
 		r.isJson = false
@@ -177,8 +367,12 @@ func (r *request[T]) checkType(t any) {
 	}
 }
 
-func (r *request[T]) Dump() ([]byte, error) {
-	//region request block
+// Dump return raw Request
+func (r *Request[T]) Dump() ([]byte, error) {
+	if r.ctx.Err() != nil {
+		return nil, r.ctx.Err()
+	}
+	//region Request block
 	var err error
 	var req *http.Request
 
@@ -196,7 +390,7 @@ func (r *request[T]) Dump() ([]byte, error) {
 	return httputil.DumpRequest(req, true)
 }
 
-func (r *request[T]) request() (*http.Response, error) {
+func (r *Request[T]) request() (*http.Response, error) {
 	resp, err := r.client.Do(r.finalReq)
 	if err != nil {
 		return nil, err
@@ -205,61 +399,46 @@ func (r *request[T]) request() (*http.Response, error) {
 	return resp, nil
 }
 
-func (r *request[T]) inStatusCode(statusCode int) bool {
-	if len(r.repeatStatusCodes) == 0 {
-		return true
+// Retry functional mechanism to perform actions repetitively until successful.
+func (r *Request[T]) Retry(options RetryOptions) *Request[T] {
+	if r.ctx.Err() != nil {
+		return r
 	}
-	for _, code := range r.repeatStatusCodes {
-		if statusCode == code {
-			return true
-		}
-	}
-	return false
-}
-
-func (r *request[T]) inHttpError(err error) bool {
-	if len(r.repeatHttpErrors) == 0 {
-		return true
-	}
-	for _, httpErr := range r.repeatHttpErrors {
-		if errors.Is(err, httpErr) {
-			return true
-		}
-	}
-	return false
-}
-
-func (r *request[T]) RepeatParams(statusCode []int, httpError []error) *request[T] {
-	r.repeatStatusCodes = statusCode
-	r.repeatHttpErrors = httpError
+	r.retryOptions = options
 	return r
 }
 
-func (r *request[T]) Repeat(rp uint, timeouts ...time.Duration) *request[T] {
-	r.cntRepeat = rp
-	r.timeouts = timeouts
-	return r
-}
-
-// Fetch fetch request
-func (r *request[T]) Fetch(ctx context.Context) (T, error) {
+// Fetch fetch Request
+func (r *Request[T]) Fetch() (T, error) {
 	var t T
 	if r.err != nil {
 		return t, r.err
 	}
-	//region request block
-	var err error
+	if r.ctx.Err() != nil {
+		return t, r.ctx.Err()
+	}
+
+	//region Request block
 
 	if len(r.body) > 0 {
 		rdr := bytes.NewReader(r.body)
-		r.finalReq, err = http.NewRequest(r.method, r.u.String(), rdr)
+		r.finalReq, r.err = http.NewRequest(r.method, r.u.String(), rdr)
+	} else if r.multipart != nil {
+		//Multipart body
+		ctt, data := r.multipart.make()
+		if r.multipart.Ctx.Err() != nil {
+			return t, r.multipart.Ctx.Err()
+		}
+		rdr := bytes.NewReader(data)
+		r.finalReq, r.err = http.NewRequest(r.method, r.u.String(), rdr)
+		r.finalReq.Header["Content-Type"] = []string{ctt}
 	} else {
-		r.finalReq, err = http.NewRequest(r.method, r.u.String(), nil)
+		r.finalReq, r.err = http.NewRequest(r.method, r.u.String(), nil)
 	}
-	if err != nil {
-		return t, err
+	if r.err != nil {
+		r.contextErr(r.err)
+		return t, r.err
 	}
-	//r.finalReq.WithContext(ctx)
 
 	//fix replace default headers
 	for k, v := range r.headers {
@@ -267,35 +446,24 @@ func (r *request[T]) Fetch(ctx context.Context) (T, error) {
 	}
 	//endregion
 
-	var cnt uint
-	//_ = cnt
+	var cnt = 1
 	var resp *http.Response
-	//resp, err = r.request()
-	for resp, err = r.request(); (err != nil || resp.StatusCode > 200) && cnt < r.cntRepeat; {
-		if cnt+1 >= r.cntRepeat {
+
+	for resp, r.err = r.request(); r.retryOptions.Repeat(resp, r.err); {
+		if r.err != nil {
+			r.contextErr(r.err)
+			return t, r.err
+		}
+
+		if !r.retryOptions.Sleep(cnt) {
 			break
 		}
-		if err != nil {
-			if !r.inHttpError(err) {
-				break
-			}
-		}
-		if resp != nil {
-			if !r.inStatusCode(resp.StatusCode) {
-				break
-			}
-		}
-		if len(r.timeouts) > 0 {
-			if len(r.timeouts) > int(cnt) {
-				time.Sleep(r.timeouts[cnt])
-			} else {
-				time.Sleep(r.timeouts[len(r.timeouts)-1])
-			}
-		}
+		slog.Debug("Retry counter", "cnt", cnt, "status", resp.Status, "error", r.err)
 		cnt++
 	}
-	if err != nil {
-		return t, err
+	if r.err != nil {
+		r.contextErr(r.err)
+		return t, r.err
 	}
 	defer func(Body io.ReadCloser) {
 		if Body != nil {
@@ -310,45 +478,74 @@ func (r *request[T]) Fetch(ctx context.Context) (T, error) {
 		rdr = resp.Body
 	}
 
+	for _, cookie := range resp.Cookies() {
+		r.cookie = append(r.cookie, cookie)
+	}
+
 	if r.isJson {
 		dec := json.NewDecoder(rdr)
 		r.err = dec.Decode(&t)
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			if r.err != nil {
-				return t, errors.New(fmt.Sprintf("%s: status code incorrect, error decode body: %s\n", resp.Status, r.err.Error()))
+				r.err = errors.New(fmt.Sprintf("%s: status code incorrect, error decode body: %s\n", resp.Status, r.err.Error()))
+				r.contextErr(r.err)
+				return t, r.err
 			}
-			return t, errors.New(fmt.Sprintf("%s: status code incorrect", resp.Status))
+			r.err = errors.New(fmt.Sprintf("%s: status code incorrect", resp.Status))
+			r.contextErr(r.err)
+			return t, r.err
 		}
 		return t, r.err
 	}
-	dt, err := io.ReadAll(rdr)
-	if err != nil {
-		return t, err
+	var dt []byte
+	dt, r.err = io.ReadAll(rdr)
+	if r.err != nil {
+		r.contextErr(r.err)
+		return t, r.err
 	}
 	r.err = r.any(&t, dt)
+	if r.err != nil {
+		r.contextErr(r.err)
+		return t, r.err
+	}
+
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		if r.err != nil {
-			return t, errors.New(fmt.Sprintf("%s: status code incorrect, error decode body: %s\n", resp.Status, r.err.Error()))
+			r.err = errors.New(fmt.Sprintf("%s: status code incorrect, error decode body: %s\n", resp.Status, r.err.Error()))
+			r.contextErr(r.err)
+			return t, r.err
 		}
-		return t, errors.New(fmt.Sprintf("%s: status code incorrect", resp.Status))
+		r.err = errors.New(fmt.Sprintf("%s: status code incorrect", resp.Status))
+		r.contextErr(r.err)
+		return t, r.err
 	}
-	return t, err
+	return t, r.err
 }
 
-// New create new request
+func (r *Request[T]) contextErr(err error) *Request[T] {
+	if err == nil {
+		return r
+	}
+	ctx, cancel := context.WithCancelCause(r.ctx)
+	r.ctx = ctx
+	cancel(err)
+	return r
+}
+
+// New create new Request
 // T any - string or byte or struct if IsJson
-func New[T any](link string) *request[T] {
-	r := new(request[T])
+func New[T any](ctx context.Context, link string) *Request[T] {
+	r := new(Request[T])
+	r.ctx = ctx
 	var t T
 	r.checkType(t)
 	r.method = http.MethodGet
 	r.headers = map[string][]string{}
 	r.client = http.DefaultClient
+	r.retryOptions = emptyOptions{}
 	r.u, r.err = url.Parse(link)
 	if r.err != nil {
-		r.u = new(url.URL)
+		r.contextErr(r.err)
 	}
 	return r
 }
-
-//todo repeat N with timeout, exponentional time.
