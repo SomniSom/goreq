@@ -2,6 +2,7 @@ package goreq
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -471,11 +472,23 @@ func (r *Request[T]) Fetch() (T, error) {
 		}
 	}(resp.Body)
 
+	var reader io.Reader
+	switch resp.Header.Get("Content-Encoding") {
+	case "gzip":
+		reader, r.err = gzip.NewReader(resp.Body)
+		if r.err != nil {
+			r.contextErr(r.err)
+			return t, r.err
+		}
+	default:
+		reader = resp.Body
+	}
+
 	var rdr io.Reader
 	if r.retBody != nil {
-		rdr = io.TeeReader(resp.Body, r.retBody)
+		rdr = io.TeeReader(reader, r.retBody)
 	} else {
-		rdr = resp.Body
+		rdr = reader
 	}
 
 	for _, cookie := range resp.Cookies() {
