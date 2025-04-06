@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/google/brotli/go/cbrotli"
 	"io"
 	"log/slog"
 	"mime/multipart"
@@ -482,6 +483,8 @@ func (r *Request[T]) Fetch() (T, error) {
 	var reader io.Reader
 	//gzip, deflate, br, zstd
 	switch resp.Header.Get("Content-Encoding") {
+	case "br":
+		reader = cbrotli.NewReader(resp.Body)
 	case "gzip":
 		reader, r.err = gzip.NewReader(resp.Body)
 		if r.err != nil {

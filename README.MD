@@ -1,15 +1,12 @@
 # Goreq [![GoDoc](https://godoc.org/github.com/SomniSom/goreq?status.svg)](https://godoc.org/github.com/SomniSom/goreq) [![Go Report Card](https://goreportcard.com/badge/github.com/SomniSom/goreq)](https://goreportcard.com/report/github.com/SomniSom/goreq) [![Coverage Status](https://coveralls.io/repos/github/SomniSom/goreq/badge.svg)](https://coveralls.io/github/SomniSom/goreq)
 
 ## Features
-
+- Compress brotli, gzip, deflate
 - Simplifies HTTP client usage compared to net/http
-- Can't forget to close response body
 - Checks status codes by default
 - Supports context.Context
-- JSON serialization and deserialization helpers
-- No third party dependencies
+- JSON serialization and deserialization on board
 
-[//]: # (- Request recording and replaying for tests)
 
 ## Examples
 ### Simple GET into a string
@@ -186,6 +183,11 @@ s, err := goreq.New[string]("https://prod.example.com/get?a=1&b=2").
 ```
 
 ## FAQs
-In work
+### Brotli
+* install `https://github.com/google/brotli`
+* from root repo `cp ./out/lib/pkgconfig/* /lib/pkgconfig/`
+* enjoy
 
-[//]: # ([See wiki]&#40;https://github.com/earthboundkid/requests/wiki&#41; for more details.)
+
+
+
