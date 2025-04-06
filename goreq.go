@@ -185,6 +185,7 @@ type Request[T any] struct {
 	repeatStatusCodes []int
 	repeatHttpErrors  []error
 	err               error
+	lastResponse      *http.Response
 	cookie            []*http.Cookie
 }
 
@@ -409,6 +410,11 @@ func (r *Request[T]) Retry(options RetryOptions) *Request[T] {
 	return r
 }
 
+// GetLastResponse get *http.Response of last request, but body is empty and closed, use method ToBody
+func (r Request[T]) GetLastResponse() *http.Response {
+	return r.lastResponse
+}
+
 // Fetch fetch Request
 func (r *Request[T]) Fetch() (T, error) {
 	var t T
@@ -462,6 +468,7 @@ func (r *Request[T]) Fetch() (T, error) {
 		slog.Debug("Retry counter", "cnt", cnt, "status", resp.Status, "error", r.err)
 		cnt++
 	}
+	r.lastResponse = resp
 	if r.err != nil {
 		r.contextErr(r.err)
 		return t, r.err
@@ -473,6 +480,7 @@ func (r *Request[T]) Fetch() (T, error) {
 	}(resp.Body)
 
 	var reader io.Reader
+	//gzip, deflate, br, zstd
 	switch resp.Header.Get("Content-Encoding") {
 	case "gzip":
 		reader, r.err = gzip.NewReader(resp.Body)
