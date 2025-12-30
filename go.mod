@@ -2,4 +2,7 @@ module github.com/SomniSom/goreq
 
 go 1.23
 
-require github.com/google/brotli/go/cbrotli v0.0.0-20250131134309-440e03642b89
+require (
+	github.com/andybalholm/brotli v1.2.0
+	github.com/klauspost/compress v1.18.2
+)

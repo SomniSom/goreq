@@ -168,25 +168,23 @@ res, err := goreq.New[placeholder]("https://jsonplaceholder.typicode.com").
 
 ```go
 // Set headers
-obj, err := goreq.New[string]("https://postman-echo.com/get").
+obj, _ := goreq.New[string](ctx, "https://postman-echo.com/get").
 	Headers("User-Agent", "bond/james-bond",
 		"Content-Type", "secret",
 		"martini", "shaken").
-	Fetch(ctx)
+	Fetch()
 ```
 
 ### Easily manipulate URLs and query parameters
 
 ```go
-s, err := goreq.New[string]("https://prod.example.com/get?a=1&b=2").
-	Params("b", "3","c", "4").Fetch(ctx)
+str, _ := goreq.New[string](ctx, "https://prod.example.com/get?a=1&b=2").Params("b", "3","c", "4").Fetch()
+//result url: https://prod.example.com/get?a=1&b=3&c=4
 ```
 
 ## FAQs
 ### Brotli
-* install `https://github.com/google/brotli`
-* from root repo `cp ./out/lib/pkgconfig/* /lib/pkgconfig/`
-* enjoy
+`github.com/andybalholm/brotli` compressor and decompressor implemented in Go. 
 
 
 
