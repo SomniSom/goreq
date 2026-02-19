@@ -400,6 +400,7 @@ func (r *Request[T]) any(t any, dt []byte) error {
 	}
 	return nil
 }
+
 func (r *Request[T]) checkType(t any) {
 	switch t.(type) {
 	case *[]byte:
@@ -638,6 +639,89 @@ func (r *Request[T]) Fetch() (T, error) {
 	return t, r.err
 }
 
+//func (r *Request[T]) ToFile(filename string) error {
+//	//todo необходимо протестировать функционал!
+//	if r.err != nil {
+//		return r.err
+//	}
+//	if r.ctx.Err() != nil {
+//		return r.ctx.Err()
+//	}
+//
+//	if err := r.makeRequest(); err != nil {
+//		r.contextErr(err)
+//		return err
+//	}
+//
+//	var cnt = 1
+//	var resp *http.Response
+//
+//	//Retry method
+//	for resp, r.err = r.request(); r.retryOptions.Repeat(resp, r.err); {
+//		if r.err != nil || resp == nil {
+//			r.contextErr(r.err)
+//			return r.err
+//		}
+//
+//		if !r.retryOptions.Sleep(cnt) {
+//			break
+//		}
+//		slog.Debug("Retry counter", "cnt", cnt, "status", resp.Status, "error", r.err)
+//		cnt++
+//	}
+//	if resp == nil {
+//		return r.err
+//	}
+//	r.lastResponse = resp
+//	if r.err != nil {
+//		r.contextErr(r.err)
+//		return r.err
+//	}
+//
+//	defer func(Body io.ReadCloser) {
+//		if Body != nil {
+//			_ = Body.Close()
+//		}
+//	}(resp.Body)
+//
+//	//region compress check
+//	var reader io.Reader
+//	//gzip, deflate, br, zstd
+//	switch resp.Header.Get("Content-Encoding") {
+//	case "zstd":
+//		reader, r.err = zstd.NewReader(resp.Body)
+//		if r.err != nil {
+//			r.contextErr(r.err)
+//			return r.err
+//		}
+//	case "br":
+//		reader = brotli.NewReader(resp.Body)
+//	case "gzip":
+//		reader, r.err = gzip.NewReader(resp.Body)
+//		if r.err != nil {
+//			r.contextErr(r.err)
+//			return r.err
+//		}
+//	default:
+//		reader = resp.Body
+//	}
+//	//endregion
+//
+//	f, err := os.Create(filename)
+//	if err != nil {
+//		return err
+//	}
+//	defer func(f *os.File) {
+//		_ = f.Close()
+//	}(f)
+//	_, err = io.Copy(f, reader)
+//	if err != nil {
+//		return err
+//	}
+//
+//	return nil
+//}
+
 func (r *Request[T]) contextErr(err error) *Request[T] {
 	if err == nil {
 		return r
@@ -661,10 +745,7 @@ func New[T any](ctx context.Context, link string) *Request[T] {
 	r.method = http.MethodGet
 
 	//set default headers
-	r.headers = map[string][]string{
-		"Accept-Encoding": {"deflate,gzip,zstd,br"},
-		"User-Agent":      {"SomniSom-goreq/1.0"},
-	}
+	r.headers = map[string][]string{}
 	r.client = http.DefaultClient
 	r.retryOptions = emptyOptions{}
 	r.u, r.err = url.Parse(link)
