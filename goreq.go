@@ -470,8 +470,8 @@ func (r *Request[T]) makeRequest() error {
 	//region Request block
 	if len(r.body) > 0 {
 		//Fix http method
-		if r.finalReq.Method == http.MethodGet {
-			r.finalReq.Method = http.MethodPost
+		if r.method == http.MethodGet {
+			r.method = http.MethodPost
 		}
 		rdr := bytes.NewReader(r.body)
 		r.finalReq, r.err = http.NewRequest(r.method, r.u.String(), rdr)
